@@ -12,6 +12,9 @@ const upload = multer({ dest: 'uploads/' });
 // 靜態檔案（前端）
 app.use(express.static('public'));
 
+// ✅ 加這行：讓 req.body.format 讀得到
+app.use(express.urlencoded({ extended: true }));
+
 // 確保資料夾存在
 ['uploads', 'converted'].forEach(dir => {
   if (!fs.existsSync(dir)) {
@@ -61,7 +64,12 @@ app.get('/download/:file', (req, res) => {
   res.download(filePath);
 });
 
+// ✅ 加這段：Render 健康檢查用
+app.get('/healthz', (req, res) => {
+  res.status(200).send('ok');
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
