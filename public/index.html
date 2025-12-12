@@ -107,11 +107,12 @@
     <section class="card">
       <h2>Convert your video</h2>
       <p class="small">
-        Upload a video file from your device and convert it to another format. 
+        Upload a video file from your device and convert it to another format.
         We temporarily store your file only for conversion and delete it after a short time.
       </p>
 
-      <form id="convert-form">
+      <!-- ✅ 加上 enctype，讓 multipart 更明確 -->
+      <form id="convert-form" enctype="multipart/form-data">
         <label for="video">1. Choose a video file</label>
         <input type="file" id="video" name="video" accept="video/*" required />
 
@@ -144,7 +145,7 @@
       </ul>
       <h3>Legal & privacy</h3>
       <p class="small">
-        Only upload files you have the right to use and convert. 
+        Only upload files you have the right to use and convert.
         We do not publicly share your files and automatically remove them after processing.
       </p>
     </aside>
@@ -171,38 +172,116 @@
     const downloadEl = document.getElementById('download');
     const btn = document.getElementById('convert-btn');
 
-    form.addEventListener('submit', async (e) => {
+    let pollTimer = null;
+
+    function stopPolling() {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    }
+
+    async function pollStatus(jobId) {
+      stopPolling();
+
+      pollTimer = setInterval(async () => {
+        try {
+          const res = await fetch(`/status/${jobId}`);
+          if (!res.ok) throw new Error('Status check failed');
+          const data = await res.json();
+
+          if (data.status === 'converting') {
+            const p = (typeof data.progress === 'number') ? data.progress : 0;
+            statusEl.textContent = `Converting... ${p}%`;
+            return;
+          }
+
+          if (data.status === 'done') {
+            stopPolling();
+            statusEl.textContent = 'Conversion completed!';
+            downloadEl.innerHTML = `<a href="${data.downloadUrl}">Download your converted video</a>`;
+            btn.disabled = false;
+            return;
+          }
+
+          if (data.status === 'error') {
+            stopPolling();
+            statusEl.textContent = `Error: ${data.error || 'Conversion failed.'}`;
+            btn.disabled = false;
+            return;
+          }
+
+          // queued / unknown
+          statusEl.textContent = 'Preparing conversion...';
+        } catch (e) {
+          // Render 冷啟動或短暫斷線時，先顯示等待，不直接判定失敗
+          statusEl.textContent = 'Checking status...';
+        }
+      }, 1000);
+    }
+
+    // ✅ 方案二：用 XHR 取得上傳進度，拿到 jobId 後輪詢 /status
+    form.addEventListener('submit', (e) => {
       e.preventDefault();
+
+      stopPolling();
+      downloadEl.innerHTML = '';
+
       const fileInput = document.getElementById('video');
       if (!fileInput.files.length) {
         statusEl.textContent = 'Please choose a video file.';
         return;
       }
 
-      statusEl.textContent = 'Uploading and converting... This may take a while.';
-      downloadEl.innerHTML = '';
       btn.disabled = true;
+      statusEl.textContent = 'Uploading... 0%';
 
       const formData = new FormData(form);
 
-      try {
-        const res = await fetch('/convert', {
-          method: 'POST',
-          body: formData
-        });
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/convert', true);
 
-        if (!res.ok) {
-          throw new Error('Conversion failed. Please try again.');
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) {
+          const percent = Math.round((event.loaded / event.total) * 100);
+          statusEl.textContent = `Uploading... ${percent}%`;
+        } else {
+          statusEl.textContent = 'Uploading...';
         }
+      };
 
-        const data = await res.json();
-        statusEl.textContent = 'Conversion completed!';
-        downloadEl.innerHTML = `<a href="${data.url}">Download your converted video</a>`;
-      } catch (err) {
-        statusEl.textContent = err.message;
-      } finally {
+      xhr.upload.onloadend = () => {
+        statusEl.textContent = 'Upload done. Starting conversion...';
+      };
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const data = JSON.parse(xhr.responseText);
+
+            // 方案二後端會回 { jobId }
+            if (!data.jobId) {
+              throw new Error('Server did not return a jobId.');
+            }
+
+            statusEl.textContent = 'Converting... 0%';
+            pollStatus(data.jobId);
+          } catch (err) {
+            statusEl.textContent = 'Bad response from server.';
+            btn.disabled = false;
+          }
+        } else {
+          statusEl.textContent = xhr.responseText || 'Conversion failed.';
+          btn.disabled = false;
+        }
+      };
+
+      xhr.onerror = () => {
+        statusEl.textContent = 'Network error. Please try again.';
         btn.disabled = false;
-      }
+      };
+
+      xhr.send(formData);
     });
   </script>
 </body>
